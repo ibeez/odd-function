@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Odd Integral, Fig. 06</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Special+Elite&display=swap">
+<style>
+  :root {
+    --paper: #fbf5e6;
+    --label: #48545c; /* Blue Grey B47 */
+    --hand: "Gaegu", "Comic Sans MS", "Chalkboard SE", cursive;
+    color-scheme: light;
+  }
+  html, body { background: var(--paper); color: var(--label); }
+  body {
+    margin: 0;
+    min-height: 100%;
+    font-family: var(--hand);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-block: 24px 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    gap: 14px;
+  }
+  canvas {
+    width: min(100%, 760px);
+    aspect-ratio: 1200 / 1000;
+    max-width: 100%;
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas:active {
+    cursor: grabbing;
+  }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .controls button {
+    font: 700 18px/1 var(--hand);
+    color: var(--label);
+    background: transparent;
+    border: 1.5px solid var(--label);
+    border-radius: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .controls button:hover {
+    background: rgba(72, 84, 92, 0.08);
+  }
+  .controls button:focus-visible { outline: 2px solid #0846a9; outline-offset: 2px; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .sr:focus { position: static; width: auto; height: auto; clip: auto; }
+</style>
+</head>
+<body>
+
+<canvas id="plate" width="1200" height="1000" role="img"
+  aria-label="Fig. 06. The integral from minus a to a of f of x is 0. An ASCII graph of an odd function shaped like two jello bubbles, one up and one down, that fall to 0 at minus a and a. The area above the axis is filled with the word odd in warm shimmering colors, the area below with the same word turned upside down in cool colors. Pull the curve anywhere and it wobbles like jello, and the opposite point moves the opposite way, so the two areas always cancel."></canvas>
+
+<div class="controls">
+  <button class="sr" id="btn-replay" type="button">Replay the wobble</button>
+  <button class="sr" id="btn-reset" type="button">Reset the bubbles</button>
+  <button class="sr" id="btn-pause" type="button">Pause</button>
+  <button class="sr" id="btn-record" type="button">Record one loop</button>
+</div>
+<div class="sr" aria-live="polite" id="live"></div>
+
+<script src="palette.js"></script>
+<script>
+const M = window.MARKERS || {
+  "Blue Grey B47": "#48545c",
+  "Cool Grey C43": "#9faab5",
+  "Frost Blue 182": "#7ce7fd",
+  "Dark Blue Light 15": "#519aff",
+  "POSCA Indigo": "#0846a9",
+  "POSCA Tomato Red": "#f8304d",
+  "Warm Coral 208": "#ff5662",
+  "Peach 18": "#ffb3b1",
+  "Light Cantaloupe 275": "#ffc137",
+  "POSCA Orange": "#ff8708"
+};
+
+const PAPER = "#fbf5e6";
+const LABEL = M["Blue Grey B47"];
+// shimmer ramps, deep to light: warm above the axis, cool below
+const WARM = [M["POSCA Tomato Red"], M["Warm Coral 208"], M["POSCA Orange"], M["Light Cantaloupe 275"], M["Warm Coral 208"]];
+const COOL = [M["POSCA Indigo"], M["Dark Blue Light 15"], M["Dark Blue Light 15"], M["Frost Blue 182"], M["POSCA Indigo"]];
+const FONT = '"Gaegu", "Comic Sans MS", "Chalkboard SE", cursive';
+// the axes are typed, not drawn: a typewriter face against the hand-lettered fills
+const TYPE = '"Special Elite", "Courier New", monospace';
+
+const cv = document.getElementById("plate");
+const g = cv.getContext("2d");
+const S = 1200, H = 1000;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+cv.width = S * DPR; cv.height = H * DPR;
+g.scale(DPR, DPR);
+
+// Paper: one seamless tile behind the whole page, same as Fig. 03. The canvas only paints it when recording.
+const TILE = 420;
+const paper = (() => {
+  const c = document.createElement("canvas");
+  c.width = TILE; c.height = TILE;
+  const p = c.getContext("2d");
+  p.fillStyle = PAPER;
+  p.fillRect(0, 0, TILE, TILE);
+  const img = p.getImageData(0, 0, TILE, TILE), d = img.data;
+  let seed = 42;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const blot = [];
+  for (let i = 0; i < 6; i++) blot.push([rnd() * TILE, rnd() * TILE, 60 + rnd() * 110, rnd() < 0.5 ? -1 : 1]);
+  for (let y = 0; y < TILE; y++) {
+    for (let x = 0; x < TILE; x++) {
+      let n = (rnd() - 0.5) * 11;
+      for (const [bx, by, br, s] of blot) {
+        let dx = Math.abs(x - bx), dy = Math.abs(y - by);
+        dx = Math.min(dx, TILE - dx); dy = Math.min(dy, TILE - dy);
+        const q = (dx * dx + dy * dy) / (br * br);
+        if (q < 1) n += s * 4 * (1 - q);
+      }
+      const idx = (x + y * TILE) * 4;
+      d[idx] += n; d[idx + 1] += n; d[idx + 2] += n * 1.1;
+    }
+  }
+  p.putImageData(img, 0, 0);
+  p.lineCap = "round";
+  for (let i = 0; i < 220; i++) {
+    const x = rnd() * TILE, y = rnd() * TILE, a = rnd() * Math.PI, l = 4 + rnd() * 12;
+    const mx = (rnd() - 0.5) * 3, my = (rnd() - 0.5) * 3;
+    p.strokeStyle = rnd() < 0.6 ? "rgba(120,100,70,0.09)" : "rgba(255,255,255,0.45)";
+    p.lineWidth = 0.6 + rnd() * 0.7;
+    for (const ox of [-TILE, 0, TILE]) for (const oy of [-TILE, 0, TILE]) {
+      p.beginPath();
+      p.moveTo(x + ox, y + oy);
+      p.quadraticCurveTo(x + ox + Math.cos(a) * l * 0.5 + mx, y + oy + Math.sin(a) * l * 0.5 + my, x + ox + Math.cos(a) * l, y + oy + Math.sin(a) * l);
+      p.stroke();
+    }
+  }
+  return c;
+})();
+document.documentElement.style.background = `${PAPER} url(${paper.toDataURL()}) repeat`;
+document.body.style.background = "transparent";
+const paperPattern = g.createPattern(paper, "repeat");
+
+// ASCII grid, same cells as Mobius. Odd counts so the origin sits on a cell center
+// and every cell has a twin straight through the origin.
+const CW = 16, CH = 25;
+const COLS = 73, ROWS = 31;
+const OC = 36, OR = 15;
+const GX = (S - COLS * CW) / 2;
+const GY = 205;
+const OX = GX + OC * CW + CW / 2;
+const OY = GY + OR * CH + CH / 2;
+const XU = 250, YU = 150;  // pixels per unit
+const X = x => OX + x * XU;
+const Y = y => OY - y * YU;
+
+// The jello lives on nodes for u = x / w in [0, 1]. f(-x) = -f(x) fills in the rest,
+// so whatever you do to it, it stays odd. Both ends are pinned at 0, so it is two bubbles:
+// one up, one down. The interval [-a, a] is separate: it can cut the bubbles short of their roots.
+const NK = 81, DU = 1 / (NK - 1);
+const base = u => 1.5 * Math.sin(Math.PI * u);
+const A0 = 1.5;
+const y = new Float32Array(NK);     // where the jello is
+const v = new Float32Array(NK);     // how fast it is moving
+const T = new Float32Array(NK);     // where it wants to be
+const T0 = new Float32Array(NK);    // target when a grab began
+for (let i = 0; i < NK; i++) y[i] = T[i] = base(i * DU);
+let a = A0, aV = 0, aT = A0;   // the interval
+let w = A0, wV = 0, wT = A0;   // half the width of the jello
+
+function nodeAt(arr, u) {
+  const s = Math.sign(u), k = Math.abs(u) / DU;
+  if (k >= NK - 1) return 0;
+  const i = Math.floor(k), fr = k - i;
+  return s * (arr[i] * (1 - fr) + arr[i + 1] * fr);
+}
+// wider is flatter, like squishing a real blob
+const squish = () => Math.pow(A0 / w, 0.7);
+const f = x => nodeAt(y, x / w) * squish();
+const velAt = x => nodeAt(v, x / w) * squish();
+
+// an odd bump: a hill at c and a matching valley at -c, tapered to 0 at both ends,
+// scaled so the spot you grab follows your finger exactly
+const SIG = 0.33;
+const rawBump = (u, c) => (Math.exp(-(((u - c) / SIG) ** 2)) - Math.exp(-(((u + c) / SIG) ** 2))) * (1 - u * u);
+const bump = (u, c) => rawBump(u, c) / rawBump(c, c);
+
+// Jello: every node springs toward its target, neighbours tug on each other, and it takes a while to calm down
+const K = 42, COUPLE = 700, DAMP = 2.1;
+const AK = 70, AD = 3.2;
+function step(dt) {
+  for (let i = 1; i < NK - 1; i++) {
+    const e = y[i] - T[i];
+    const el = y[i - 1] - T[i - 1];
+    const er = y[i + 1] - T[i + 1];
+    v[i] += (-K * e + COUPLE * (el + er - 2 * e) - DAMP * v[i]) * dt;
+  }
+  for (let i = 1; i < NK - 1; i++) y[i] += v[i] * dt;
+  y[0] = y[NK - 1] = 0; v[0] = v[NK - 1] = 0;
+  aV += (-AK * (a - aT) - AD * aV) * dt;
+  a += aV * dt;
+  wV += (-AK * (w - wT) - AD * wV) * dt;
+  w += wV * dt;
+}
+// a quick pull also kicks the jello, so it overshoots and keeps jiggling
+function kick(u, amount) {
+  for (let i = 1; i < NK - 1; i++) v[i] += amount * bump(i * DU, u);
+}
+
+// The ghost demo: nobody's hand, it just happens. One seamless loop that starts and ends at rest.
+const LOOP = 20;
+const BREATH = (2 * Math.PI * 5) / LOOP;
+const SHIM = (2 * Math.PI * 5) / LOOP, WOBBLE = (2 * Math.PI * 8) / LOOP;
+const ease = u => u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u);
+const KEYS = {
+  // [time, value], quick moves like a hand would make, with holds so the wobble shows
+  // opens with the interval cut short, so the fills stand off the axis at both ends: no roots needed
+  A1: [[0, 0], [4.0, 0], [4.6, 1.1], [6.2, 1.1], [6.9, -2.1], [15.8, -2.1], [16.8, 0]],
+  A2: [[0, 0], [8.0, 0], [8.6, 0.9], [15.8, 0.9], [16.8, 0]],
+  a:  [[0, 1.0], [2.6, 1.0], [3.3, A0], [10.2, A0], [10.8, 2.2], [12.0, 2.2], [12.6, 0.9], [13.6, 0.9], [14.2, A0], [18.4, A0], [19.1, 1.0]],
+  w:  [[0, A0], [10.2, A0], [10.8, 2.2], [12.0, 2.2], [12.6, 0.9], [13.6, 0.9], [14.2, A0]],
+};
+function key(list, t) {
+  for (let i = 1; i < list.length; i++) {
+    if (t < list[i][0]) {
+      const [t0, v0] = list[i - 1], [t1, v1] = list[i];
+      return v0 + (v1 - v0) * ease((t - t0) / (t1 - t0));
+    }
+  }
+  return list[list.length - 1][1];
+}
+function demoTargets(t) {
+  const A1 = key(KEYS.A1, t), A2 = key(KEYS.A2, t);
+  for (let i = 1; i < NK - 1; i++) {
+    const u = i * DU;
+    T[i] = base(u) + A1 * bump(u, 0.45) + A2 * bump(u, 0.78);
+  }
+  aT = key(KEYS.a, t);
+  wT = key(KEYS.w, t);
+}
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let demo = !reduced;
+let paused = false, recording = false;
+let loopStart = performance.now(), pausedFor = 0, pauseAt = 0;
+let last = performance.now();
+let drag = null;
+
+const WORD = "odd ";
+const charAt = (c, r) => WORD[(((c - OC + r * 2) % 4) + 4) % 4];
+
+// what each cell holds this frame: 0 empty, 1 fill above, 2 fill below
+const kind = new Uint8Array(COLS * ROWS);
+
+function layout() {
+  kind.fill(0);
+  for (let c = 0; c < COLS; c++) {
+    const xc = (c - OC) * CW / XU;
+    if (Math.abs(xc) >= a) continue;
+    const fc = f(xc);
+    for (let r = 0; r < ROWS; r++) {
+      const yc = (OR - r) * CH / YU;
+      if (yc > 0 && yc < fc) kind[c + r * COLS] = 1;
+      else if (yc < 0 && yc > fc) kind[c + r * COLS] = 2;
+    }
+  }
+}
+
+function drawGrid(t, still) {
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const idx = c + r * COLS;
+      const k = kind[idx];
+      const px = GX + c * CW + CW / 2;
+      const py = GY + r * CH + CH / 2;
+      const xc = (c - OC) * CW / XU;
+
+      if (k === 0) {
+        // faint axes
+        let ch = null;
+        if (r === OR) ch = c === 0 ? "<" : c === COLS - 1 ? ">" : c === OC ? "+" : "-";
+        else if (c === OC) ch = r === 0 ? "^" : r === ROWS - 1 ? "v" : "|";
+        if (!ch) continue;
+        g.font = `400 20px ${TYPE}`;
+        g.fillStyle = LABEL;
+        g.globalAlpha = 0.45;
+        const aph = ((c * 37 + r * 89) % 61) / 61 * 2 * Math.PI;
+        g.save();
+        g.translate(px + still * 0.9 * Math.sin(t * WOBBLE * 0.5 + aph), py + still * 0.9 * Math.cos(t * WOBBLE * 0.5 + aph * 2));
+        g.rotate(still * 0.05 * Math.sin(t * WOBBLE * 0.5 + aph * 3));
+        g.fillText(ch, 0, 0);
+        g.restore();
+        g.globalAlpha = 1;
+        continue;
+      }
+
+      // fills below the axis borrow everything from their twin through the origin, turned 180 degrees
+      const below = k === 2;
+      const mc = below ? 2 * OC - c : c, mr = below ? 2 * OR - r : r;
+      const ph = ((mc * 73 + mr * 151) % 97) / 97 * 2 * Math.PI;
+      // letters jiggle harder where the jello is moving, and squash or stretch with it
+      const vel = velAt(xc) * (below ? -1 : 1);
+      const jig = 1.3 + Math.min(8, Math.abs(vel) * 2.6);
+      let wx = still * jig * Math.sin(t * WOBBLE + ph * 2);
+      let wy = still * jig * Math.cos(t * WOBBLE + ph * 3) - vel * 2.2;
+      let rot = still * 0.07 * Math.sin(t * WOBBLE + ph);
+      const sy = 1 + Math.max(-0.35, Math.min(0.45, vel * 0.09)) * (below ? -1 : 1);
+
+      const ch = charAt(mc, mr);
+      if (ch === " ") continue;
+      // a bright band sweeps across the letters, diagonally, on repeat
+      const wave = 0.5 + 0.5 * Math.sin(t * SHIM * still - (mc - OC) * 0.16 + (mr - OR) * 0.3);
+      const ramp = below ? COOL : WARM;
+      const color = ramp[Math.min(4, Math.floor(wave ** 1.6 * 5))];
+      if (below) { wx = -wx; wy = -wy; rot += Math.PI; }
+      g.font = `700 27px ${FONT}`;
+      g.fillStyle = color;
+      g.strokeStyle = color;
+      g.lineWidth = 2.6;
+      g.lineJoin = "round";
+      g.save();
+      g.translate(px + wx, py + wy);
+      g.rotate(rot);
+      g.scale(1 / Math.sqrt(sy), sy);
+      g.strokeText(ch, 0, 1);
+      g.fillText(ch, 0, 1);
+      g.restore();
+    }
+  }
+}
+
+// every bit of text wobbles gently, one letter at a time, each on its own phase
+function wobblyText(text, x, y, t, still, seed = 0, amp = 1) {
+  const align = g.textAlign;
+  const total = g.measureText(text).width;
+  let cx = align === "center" ? x - total / 2 : x;
+  g.textAlign = "left";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i], w = g.measureText(ch).width;
+    const ph = (seed + i) * 2.39;
+    g.save();
+    g.translate(cx + w / 2 + still * amp * Math.sin(t * WOBBLE * 0.5 + ph), y + still * amp * 1.3 * Math.cos(t * WOBBLE * 0.5 + ph * 1.7));
+    g.rotate(still * amp * 0.04 * Math.sin(t * WOBBLE * 0.5 + ph * 2.3));
+    g.fillText(ch, -w / 2, 0);
+    g.restore();
+    cx += w;
+  }
+  g.textAlign = align;
+}
+
+// the two interval handles sit on opposite sides of the axis, twins through the origin
+function handleSpots() {
+  return [[X(a), OY + CH * 1.25, "[a]"], [X(-a), OY - CH * 1.25, "[-a]"]];
+}
+function drawHandles(t, still) {
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.font = `400 26px ${TYPE}`;
+  const grabbed = drag && drag.type === "a";
+  for (const [hx, hy, txt] of handleSpots()) {
+    const s = 1 + Math.min(0.25, (Math.abs(aV) + Math.abs(wV)) * 0.08) * Math.sin(t * 30) + (grabbed ? 0.12 : 0);
+    g.save();
+    g.translate(hx, hy);
+    g.scale(s, s);
+    g.fillStyle = LABEL;
+    wobblyText(txt, 0, 2, t, still, txt.length * 5, 1.2);
+    g.restore();
+  }
+}
+
+function drawHeader(t, still, energy) {
+  // series label, same spot and weight as the other figures
+  g.textBaseline = "alphabetic";
+  g.textAlign = "left";
+  g.font = `400 24px ${FONT}`;
+  g.globalAlpha = 0.7;
+  g.fillStyle = LABEL;
+  wobblyText("Fig. 06", 44, 62, t, still, 40, 0.8);
+  g.globalAlpha = 1;
+
+  const HY = 120;
+  g.font = `700 66px ${FONT}`;
+  const body = "f(x) dx = ";
+  const wb = g.measureText(body).width, w0 = g.measureText("0").width;
+  const IW = 74;
+  let x0 = S / 2 - (IW + wb + w0) / 2;
+
+  // the whole term sways up and down as one piece, five slow bobs per loop
+  g.save();
+  g.translate(0, still * 5 * Math.sin(t * BREATH));
+
+  // a hand-drawn integral sign, so it doesn't fall back to a system font
+  g.save();
+  g.strokeStyle = LABEL;
+  g.lineWidth = 5;
+  g.lineCap = "round";
+  g.beginPath();
+  g.moveTo(x0 + 30, HY - 50);
+  g.quadraticCurveTo(x0 + 20, HY - 64, x0 + 14, HY - 34);
+  g.lineTo(x0 + 8, HY + 2);
+  g.quadraticCurveTo(x0 + 2, HY + 26, x0 - 8, HY + 12);
+  g.stroke();
+  g.restore();
+  g.font = `700 28px ${FONT}`;
+  g.fillStyle = LABEL;
+  g.fillText("a", x0 + 34, HY - 42);
+  g.fillText("-a", x0 + 18, HY + 22);
+
+  g.font = `700 66px ${FONT}`;
+  g.fillText(body, x0 + IW, HY);
+
+  // the 0 feels every wobble but never changes
+  const j = Math.min(1, energy);
+  g.save();
+  g.translate(x0 + IW + wb + w0 / 2, HY - 22);
+  g.rotate(still * j * 0.22 * Math.sin(t * 26));
+  g.scale(1 + 0.22 * j * Math.abs(Math.sin(t * 13)), 1 - 0.12 * j * Math.sin(t * 26));
+  g.fillStyle = j > 0.08 ? WARM[0] : LABEL;
+  g.textAlign = "center";
+  g.fillText("0", 0, 22);
+  g.restore();
+
+  g.textAlign = "center";
+  g.font = `400 32px ${FONT}`;
+  g.globalAlpha = 0.75;
+  g.fillText("f(-x) = -f(x)", S / 2, HY + 52);
+  g.globalAlpha = 1;
+  g.restore();
+}
+
+function frame(now) {
+  let dt = Math.min(1 / 30, (now - last) / 1000);
+  last = now;
+  if (paused) dt = 0;
+  const t = ((now - loopStart - pausedFor) / 1000);
+  const still = reduced && !recording ? 0 : 1;
+
+  if (demo && !drag) demoTargets(t % LOOP);
+  const n = Math.ceil(dt * 240);
+  for (let i = 0; i < n; i++) step(dt / n);
+  paint(t, still, paused ? pauseAt / 1000 : t);
+  requestAnimationFrame(frame);
+}
+
+function paint(t, still, gridT) {
+  let energy = 0;
+  for (let i = 0; i < NK; i++) energy += Math.abs(v[i]);
+  energy = energy / NK * 0.9 + (Math.abs(aV) + Math.abs(wV)) * 0.15;
+
+  g.clearRect(0, 0, S, H);
+  if (recording) { g.fillStyle = paperPattern; g.fillRect(0, 0, S, H); }
+  layout();
+  drawGrid(gridT, still);
+  drawHandles(t, still);
+  drawHeader(t, still, energy);
+}
+
+// Video: ?render steps the demo one frame at a time at 30 fps and posts each frame to render.py,
+// which encodes H.264. One silent lap first, so frame 0 matches the end of the loop.
+const FPS = 30;
+async function renderVideo() {
+  recording = true; demo = true;
+  const tick = t => { demoTargets(t % LOOP); for (let i = 0; i < 8; i++) step(1 / FPS / 8); };
+  for (let f = 0; f < LOOP * FPS; f++) tick(f / FPS);
+  for (let f = 0; f < LOOP * FPS; f++) {
+    const t = f / FPS;
+    tick(t);
+    paint(t, 1, t);
+    const blob = await new Promise(r => cv.toBlob(r, "image/png"));
+    await fetch(`/frame?i=${f}`, { method: "POST", body: blob });
+  }
+  await fetch("/done", { method: "POST" });
+}
+
+function toCanvas(e) {
+  const b = cv.getBoundingClientRect();
+  return [(e.clientX - b.left) * S / b.width, (e.clientY - b.top) * H / b.height];
+}
+
+const live = document.getElementById("live");
+let lastTap = 0, lastTapAt = [0, 0];
+
+function resetCurve() {
+  for (let i = 0; i < NK; i++) T[i] = base(i * DU);
+  aT = A0; wT = A0;
+  live.textContent = "Back to two round bubbles. Still 0.";
+}
+
+cv.addEventListener("pointerdown", e => {
+  const [px, py] = toCanvas(e);
+  // double tap resets
+  if (now() - lastTap < 320 && Math.hypot(px - lastTapAt[0], py - lastTapAt[1]) < 40) {
+    demo = false;
+    resetCurve();
+    lastTap = 0;
+    return;
+  }
+  lastTap = now(); lastTapAt = [px, py];
+  if (py < GY - 10) return;
+  demo = false;
+  cv.setPointerCapture(e.pointerId);
+  for (const [hx, hy] of handleSpots()) {
+    if (Math.hypot(px - hx, py - hy) < 46) { drag = { type: "a" }; return; }
+  }
+  const x = (px - OX) / XU;
+  const s = x < 0 ? -1 : 1;
+  const ug = Math.min(0.9, Math.max(0.1, Math.abs(x) / w));
+  T0.set(T);
+  drag = { type: "curve", ug, s, py0: py, pyLast: py };
+});
+
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const [px, py] = toCanvas(e);
+  if (drag.type === "a") {
+    aT = Math.min(2.3, Math.max(0.5, Math.abs((px - OX) / XU)));
+    return;
+  }
+  // pulling at -x is the same as pushing at +x
+  const dy = -(py - drag.py0) / YU * drag.s / squish();
+  for (let i = 1; i < NK - 1; i++) T[i] = T0[i] + dy * bump(i * DU, drag.ug);
+  kick(drag.ug, -(py - drag.pyLast) / YU * drag.s * 6);
+  drag.pyLast = py;
+});
+
+function release() {
+  if (!drag) return;
+  drag = null;
+  live.textContent = "The area above and the area below cancel. Still 0.";
+}
+cv.addEventListener("pointerup", release);
+cv.addEventListener("pointercancel", release);
+
+const now = () => performance.now();
+
+function replay() {
+  demo = !reduced || recording;
+  loopStart = now(); pausedFor = 0;
+}
+
+document.getElementById("btn-replay").onclick = replay;
+document.getElementById("btn-reset").onclick = () => { demo = false; resetCurve(); };
+const btnPause = document.getElementById("btn-pause");
+btnPause.onclick = () => {
+  paused = !paused;
+  if (paused) pauseAt = now() - loopStart - pausedFor;
+  else pausedFor = now() - loopStart - pauseAt;
+  btnPause.textContent = paused ? "Play" : "Pause";
+};
+
+// Recording: snap to rest, then one seamless loop of the ghost demo
+const local = typeof location !== "undefined" && (location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname));
+const rec = document.getElementById("btn-record");
+rec.hidden = !local || !window.MediaRecorder;
+rec.onclick = () => {
+  const type = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"].find(t => MediaRecorder.isTypeSupported(t));
+  const mr = new MediaRecorder(cv.captureStream(30), { mimeType: type, videoBitsPerSecond: 12e6 });
+  const chunks = [];
+  mr.ondataavailable = e => chunks.push(e.data);
+  mr.onstop = () => {
+    recording = false;
+    rec.textContent = "Record one loop";
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob(chunks, { type }));
+    el.download = "odd-integral." + (type.includes("mp4") ? "mp4" : "webm");
+    el.click();
+  };
+  for (let i = 0; i < NK; i++) { y[i] = T[i] = base(i * DU); v[i] = 0; }
+  a = aT = A0; aV = 0;
+  w = wT = A0; wV = 0;
+  drag = null;
+  recording = true;
+  paused = false;
+  replay();
+  rec.textContent = "Recording...";
+  mr.start();
+  setTimeout(() => mr.stop(), LOOP * 1000);
+};
+
+Promise.all([document.fonts.load(`700 66px "Gaegu"`), document.fonts.load(`26px "Special Elite"`)]).finally(
+  location.search.includes("render") ? () => renderVideo() :() => requestAnimationFrame(t => { last = t; frame(t); }));
+</script>
+</body>
+</html>
