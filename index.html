@@ -66,6 +66,7 @@
   aria-label="Fig. 06. The integral from minus a to a of f of x is 0. An ASCII graph of an odd function shaped like two jello bubbles, one up and one down, that fall to 0 at minus a and a. The area above the axis is filled with the word odd in warm shimmering colors, the area below with the same word turned upside down in cool colors. Pull the curve anywhere and it wobbles like jello, and the opposite point moves the opposite way, so the two areas always cancel."></canvas>
 
 <div class="controls">
+  <button id="btn-sound" type="button">sound: off</button>
   <button class="sr" id="btn-replay" type="button">Replay the wobble</button>
   <button class="sr" id="btn-reset" type="button">Reset the bubbles</button>
   <button class="sr" id="btn-pause" type="button">Pause</button>
@@ -238,7 +239,23 @@ function key(list, t) {
   }
   return list[list.length - 1][1];
 }
+// the demo's own pulls boing, so the video sounds like a hand doing it
+let demoPrev = 0;
+function demoSounds(t) {
+  if (t < demoPrev) demoPrev = -1;
+  // two pulls at the same moment make one boing, the bigger one
+  let pull = 0;
+  for (const list of [KEYS.A1, KEYS.A2]) {
+    for (let i = 1; i < list.length; i++) {
+      const [t0, v0] = list[i - 1], [, v1] = list[i];
+      if (v1 !== v0 && demoPrev < t0 && t0 <= t && Math.abs(v1 - v0) > Math.abs(pull)) pull = v1 - v0;
+    }
+  }
+  if (pull) sfx("boing", pull / 2);
+  demoPrev = t;
+}
 function demoTargets(t) {
+  demoSounds(t);
   const A1 = key(KEYS.A1, t), A2 = key(KEYS.A2, t);
   for (let i = 1; i < NK - 1; i++) {
     const u = i * DU;
@@ -449,14 +466,18 @@ function frame(now) {
   if (demo && !drag) demoTargets(t % LOOP);
   const n = Math.ceil(dt * 240);
   for (let i = 0; i < n; i++) step(dt / n);
+  if (dt) { listen(energyNow()); listenA(); }
   paint(t, still, paused ? pauseAt / 1000 : t);
   requestAnimationFrame(frame);
 }
 
-function paint(t, still, gridT) {
+function energyNow() {
   let energy = 0;
   for (let i = 0; i < NK; i++) energy += Math.abs(v[i]);
-  energy = energy / NK * 0.9 + (Math.abs(aV) + Math.abs(wV)) * 0.15;
+  return energy / NK * 0.9 + (Math.abs(aV) + Math.abs(wV)) * 0.15;
+}
+function paint(t, still, gridT) {
+  const energy = energyNow();
 
   g.clearRect(0, 0, S, H);
   if (recording) { g.fillStyle = paperPattern; g.fillRect(0, 0, S, H); }
@@ -466,21 +487,216 @@ function paint(t, still, gridT) {
   drawHeader(t, still, energy);
 }
 
+// ---------- sound: all synthesized, original, soft ----------
+// Recipes are in ../chiptune-music.md. Silent until the first touch.
+let ac = null, master, musicBus, sfxBus, timer = null;
+let muted = false;
+const midi = m => 440 * Math.pow(2, (m - 69) / 12);
+const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const N = s => s === "-" ? null : 12 * (+s.slice(1) + 1) + PC[s[0]];
+// ten bars of eighth notes, F major pentatonic, 120 BPM: 10 bars is exactly the 20 second loop
+const MEL = [
+  "A4 C5 D5 C5 A4 - C5 -", "F5 - D5 C5 D5 - - -", "A4 C5 D5 F5 G5 F5 D5 -", "C5 D5 C5 A4 G4 - - -",
+  "F4 A4 C5 A4 F5 - D5 -", "C5 - A4 C5 D5 - C5 -", "D5 F5 G5 F5 D5 C5 A4 C5", "D5 - C5 - A4 - - -",
+  "G4 A4 C5 D5 C5 A4 G4 A4", "F4 - - - - - - -"
+].map(b => b.split(" ").map(N));
+const BARS = MEL.length, STEPS = BARS * 8;
+const ROOTS = ["F3", "D3", "A2", "C3", "F3", "D3", "A2", "C3", "C3", "F3"].map(N);
+const CHORDS = [[60, 65, 69], [57, 62, 65], [57, 60, 65], [55, 60, 64], [60, 65, 69], [57, 62, 65], [57, 60, 65], [55, 60, 64], [55, 60, 64], [60, 65, 69]];
+const EIGHTH = 60 / 120 / 2;
+const LADDER = [0, 2, 4, 7, 9];
+const pent = i => 65 + 12 * Math.floor(i / 5) + LADDER[i % 5];   // F4 upward
+
+// the whole sound graph, built on whatever context `ac` is: live, or offline for the video
+function buildGraph() {
+  const comp = ac.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.ratio.value = 5;
+  master = ac.createGain(); master.gain.value = muted ? 0 : 0.9;
+  master.connect(comp); comp.connect(ac.destination);
+  musicBus = ac.createGain(); musicBus.gain.value = 0.5; musicBus.connect(master);
+  // a smaller room than Fig. 07: bouncy wants a shorter tail
+  const verb = ac.createConvolver(), wet = ac.createGain();
+  const len = ac.sampleRate * 1.6, ir = ac.createBuffer(2, len, ac.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  }
+  verb.buffer = ir; wet.gain.value = 0.3;
+  musicBus.connect(verb); verb.connect(wet); wet.connect(master);
+  sfxBus = ac.createGain(); sfxBus.gain.value = 0.9; sfxBus.connect(master);
+  sfxBus.connect(verb);
+}
+
+function audioInit() {
+  if (ac) { ac.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  ac = new AC();
+  buildGraph();
+  // the button says off until the first touch actually starts the sound
+  if (!muted) document.getElementById("btn-sound").textContent = "sound: on";
+  let stepI = 0, next = ac.currentTime + 0.12;
+  timer = setInterval(() => {
+    while (next < ac.currentTime + 0.12) { music(stepI, next); stepI = (stepI + 1) % STEPS; next += EIGHTH; }
+  }, 25);
+}
+
+function tone(bus, wave, f, t, dur, vol, glide) {
+  const o = ac.createOscillator(), e = ac.createGain();
+  o.type = wave;
+  o.frequency.setValueAtTime(f, t);
+  if (glide) o.frequency.exponentialRampToValueAtTime(glide, t + dur * 0.6);
+  e.gain.setValueAtTime(0.0001, t);
+  e.gain.exponentialRampToValueAtTime(vol, t + 0.004);
+  e.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(e); e.connect(bus);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+// a soft wooden mallet: sine plus a quiet partial four times up that dies first, so every note bounces
+function mallet(f, t, vol) {
+  tone(musicBus, "sine", f, t, 0.5, vol);
+  tone(musicBus, "sine", f * 4, t, 0.08, vol * 0.18);
+  tone(musicBus, "triangle", f * 2, t, 0.12, vol * 0.12);
+}
+// pad: each chord swells in slowly and hangs over the bar line
+function pad(notes, t, dur) {
+  for (const m of notes) for (const cents of [-5, 5]) {
+    const o = ac.createOscillator(), e = ac.createGain();
+    o.type = "sine"; o.frequency.value = midi(m); o.detune.value = cents;
+    e.gain.setValueAtTime(0, t);
+    e.gain.linearRampToValueAtTime(0.018, t + 0.6);
+    e.gain.setValueAtTime(0.018, t + dur);
+    e.gain.linearRampToValueAtTime(0, t + dur + 0.8);
+    o.connect(e); e.connect(musicBus);
+    o.start(t); o.stop(t + dur + 0.9);
+  }
+}
+function music(i, t) {
+  const bar = i >> 3, s = i & 7;
+  const m = MEL[bar][s];
+  if (m) mallet(midi(m), t, 0.11);
+  if (s === 0) pad(CHORDS[bar], t, 8 * EIGHTH);
+  // oom-pah: the root on the beat, a soft octave on the off-beat
+  if (s % 2 === 0) {
+    const f = midi(ROOTS[bar]) * (s % 4 === 2 ? 2 : 1);
+    const o = ac.createOscillator(), e = ac.createGain();
+    o.type = "sine"; o.frequency.value = f;
+    e.gain.setValueAtTime(0, t);
+    e.gain.linearRampToValueAtTime(s % 4 === 2 ? 0.06 : 0.15, t + 0.02);
+    e.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+    o.connect(e); e.connect(musicBus);
+    o.start(t); o.stop(t + 0.45);
+  }
+}
+function duck(t) {
+  musicBus.gain.cancelScheduledValues(t);
+  musicBus.gain.setTargetAtTime(0.25, t, 0.02);
+  musicBus.gain.setTargetAtTime(0.5, t + 0.2, 0.12);
+}
+// boing: a note that wobbles like the jello, fast at first, then slower and smaller. Up for the top bubble, down for the bottom.
+function boing(dir, t, size) {
+  const f0 = dir > 0 ? midi(pent(5)) : midi(pent(0)) / 2;
+  const f1 = dir > 0 ? midi(pent(7)) : midi(pent(0)) / 2.6;
+  const dur = 0.55;
+  const o = ac.createOscillator(), e = ac.createGain();
+  const lfo = ac.createOscillator(), depth = ac.createGain();
+  o.type = "triangle";
+  o.frequency.setValueAtTime(f0, t);
+  o.frequency.exponentialRampToValueAtTime(f1, t + 0.12);
+  lfo.frequency.setValueAtTime(14, t);
+  lfo.frequency.exponentialRampToValueAtTime(5, t + dur);
+  depth.gain.setValueAtTime(f1 * 0.12, t);
+  depth.gain.exponentialRampToValueAtTime(f1 * 0.01, t + dur);
+  lfo.connect(depth); depth.connect(o.frequency);
+  const vol = 0.07 + 0.08 * size;
+  e.gain.setValueAtTime(0.0001, t);
+  e.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+  e.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(e); e.connect(sfxBus);
+  for (const x of [o, lfo]) { x.start(t); x.stop(t + dur + 0.05); }
+}
+function sfx(kind, arg, at) {
+  // while rendering the video, sounds are only logged; renderAudio plays them back offline
+  if (recording) { if (logT !== null) events.push([kind, arg, logT]); return; }
+  if (!ac || muted) return;
+  const t = at ?? ac.currentTime + 0.005;
+  if (kind === "boing") {
+    boing(Math.sign(arg), t, Math.min(1, Math.abs(arg)));
+    duck(t);
+  } else if (kind === "pop") {
+    // the 0 settling: a tiny cork pop
+    tone(sfxBus, "sine", 1100, t, 0.07, 0.16, 300);
+    tone(sfxBus, "sine", midi(pent(arg)), t + 0.05, 0.3, 0.06);
+  } else if (kind === "tick") {
+    tone(sfxBus, "triangle", midi(pent(arg)), t, 0.06, 0.07);
+  }
+}
+
+// sounds that come from the jello itself, for a hand or the demo alike:
+// once a big wobble calms down, the 0 pops back into place
+let restless = false;
+function listen(energy) {
+  if (energy > 0.9) restless = true;
+  else if (restless && energy < 0.12) { restless = false; sfx("pop", 7); }
+}
+// the [a] handles tick on every quarter step of the hand (not the spring, which would chatter)
+let aStep = null;
+function listenA() {
+  const k = Math.round(aT * 4);
+  if (aStep !== null && k !== aStep) sfx("tick", Math.max(0, Math.min(9, k - 2)));
+  aStep = k;
+}
+
+const btnSound = document.getElementById("btn-sound");
+btnSound.onclick = () => {
+  if (!ac) { audioInit(); return; }
+  muted = !muted;
+  master.gain.setTargetAtTime(muted ? 0 : 0.9, ac.currentTime, 0.03);
+  btnSound.textContent = muted ? "sound: off" : "sound: on";
+};
+
 // Video: ?render steps the demo one frame at a time at 30 fps and posts each frame to render.py,
-// which encodes H.264. One silent lap first, so frame 0 matches the end of the loop.
+// which encodes H.264. One silent lap first, so frame 0 matches the end of the loop. Sounds from the
+// recorded lap are logged, then played back with the music in an OfflineAudioContext and posted as a WAV.
 const FPS = 30;
+let logT = null;
+const events = [];
 async function renderVideo() {
   recording = true; demo = true;
-  const tick = t => { demoTargets(t % LOOP); for (let i = 0; i < 8; i++) step(1 / FPS / 8); };
+  const tick = t => { demoTargets(t % LOOP); for (let i = 0; i < 8; i++) step(1 / FPS / 8); listen(energyNow()); listenA(); };
   for (let f = 0; f < LOOP * FPS; f++) tick(f / FPS);
   for (let f = 0; f < LOOP * FPS; f++) {
     const t = f / FPS;
-    tick(t);
+    logT = t + 0.5 / FPS; tick(t); logT = null;
     paint(t, 1, t);
     const blob = await new Promise(r => cv.toBlob(r, "image/png"));
     await fetch(`/frame?i=${f}`, { method: "POST", body: blob });
   }
+  await fetch("/audio", { method: "POST", body: await renderAudio() });
   await fetch("/done", { method: "POST" });
+}
+async function renderAudio() {
+  const SR = 48000, TAIL = 3, n = LOOP * SR;
+  ac = new OfflineAudioContext(2, SR * (LOOP + TAIL), SR);
+  buildGraph();
+  recording = false;
+  for (let i = 0; i < STEPS; i++) music(i, i * EIGHTH);
+  for (const [k, x, t] of events) sfx(k, x, t);
+  const buf = await ac.startRendering();
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  // fold the tail back onto the start so the loop is seamless
+  for (let i = n; i < L.length; i++) { L[i - n] += L[i]; R[i - n] += R[i]; }
+  const out = new DataView(new ArrayBuffer(44 + n * 4));
+  const str = (o, x) => { for (let i = 0; i < x.length; i++) out.setUint8(o + i, x.charCodeAt(i)); };
+  str(0, "RIFF"); out.setUint32(4, 36 + n * 4, true); str(8, "WAVE"); str(12, "fmt ");
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 2, true);
+  out.setUint32(24, SR, true); out.setUint32(28, SR * 4, true); out.setUint16(32, 4, true); out.setUint16(34, 16, true);
+  str(36, "data"); out.setUint32(40, n * 4, true);
+  for (let i = 0; i < n; i++) {
+    out.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i])) * 32767, true);
+    out.setInt16(46 + i * 4, Math.max(-1, Math.min(1, R[i])) * 32767, true);
+  }
+  return new Blob([out], { type: "audio/wav" });
 }
 
 function toCanvas(e) {
@@ -498,6 +714,7 @@ function resetCurve() {
 }
 
 cv.addEventListener("pointerdown", e => {
+  audioInit();
   const [px, py] = toCanvas(e);
   // double tap resets
   if (now() - lastTap < 320 && Math.hypot(px - lastTapAt[0], py - lastTapAt[1]) < 40) {
@@ -536,6 +753,11 @@ cv.addEventListener("pointermove", e => {
 
 function release() {
   if (!drag) return;
+  // let go and it boings: up for the bubble above the axis, down for the one below
+  if (drag.type === "curve") {
+    const pull = Math.abs(drag.pyLast - drag.py0) / YU;
+    if (pull > 0.05) sfx("boing", (drag.py0 < OY ? 1 : -1) * Math.min(1, pull));
+  }
   drag = null;
   live.textContent = "The area above and the area below cancel. Still 0.";
 }

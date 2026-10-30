@@ -25,3 +25,7 @@ Re-render the video with `python3 render.py` (headless Chrome renders `index.htm
 ## How It Works
 
 One canvas, plain JavaScript, no libraries. The same 16 × 25 Gaegu grid as Fig. 04, with an odd number of rows and columns so every cell has a twin through the origin. The curve is stored on nodes for u = x/a in [0, 1], ends pinned at 0, and read back with f(-x) = -f(x). Stretching a stretches the bubbles and flattens them so they keep roughly their size. Each node springs toward its target and tugs on its neighbours, which gives the jello. A pull adds an odd bump (a hill at x, a valley at -x). Fill cells below the axis copy their twin's letter, colour and wobble, rotated 180°.
+
+## Sound
+
+All synthesized with Web Audio, silent until your first touch, with a `sound` button to mute it. A bouncy wooden mallet tune in F with an oom-pah bass loops every 20 seconds, in time with the demo. Pull the jello and let go for a wobbly boing (up for the top bubble, down for the bottom). When a big wobble settles, the 0 pops back into place. The `[a]` handles tick as they slide. Notes for other pieces: [`../chiptune-music.md`](../chiptune-music.md).
